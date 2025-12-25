@@ -1,0 +1,249 @@
+package com.example.health.data.export
+
+import android.util.Log
+import com.example.health.data.repository.GenericHealthRepository.FetchedRecords
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.File
+
+/**
+ * Generic exporter for all health record types.
+ * Exports data to JSON files organized by category.
+ */
+object GenericHealthDataExporter {
+    private const val TAG = "GenericHealthDataExporter"
+
+    /**
+     * Exports fetched records for a single record type to JSON.
+     * Uses reflection to extract common fields from records.
+     * 
+     * @param fetchedRecords The fetched records to export
+     * @return JSON string representation
+     */
+    fun exportRecordTypeToJson(fetchedRecords: FetchedRecords): String {
+        val jsonArray = JSONArray()
+
+        fetchedRecords.records.forEach { record ->
+            val jsonObject = JSONObject()
+            
+            // Add common fields using reflection
+            try {
+                // Try to get startTime (most records have this)
+                val startTimeMethod = record.javaClass.getMethod("getStartTime")
+                val startTime = startTimeMethod.invoke(record)
+                jsonObject.put("startTime", startTime.toString())
+            } catch (e: Exception) {
+                // Some records might not have startTime
+            }
+
+            try {
+                // Try to get endTime
+                val endTimeMethod = record.javaClass.getMethod("getEndTime")
+                val endTime = endTimeMethod.invoke(record)
+                jsonObject.put("endTime", endTime.toString())
+            } catch (e: Exception) {
+                // Some records might not have endTime
+            }
+
+            try {
+                // Try to get metadata
+                val metadataMethod = record.javaClass.getMethod("getMetadata")
+                val metadata = metadataMethod.invoke(record)
+                if (metadata != null) {
+                    // Metadata is complex, just add a placeholder
+                    jsonObject.put("hasMetadata", true)
+                }
+            } catch (e: Exception) {
+                // Metadata might not be accessible
+            }
+
+            // Add record-specific data using toString for now
+            // In a production app, you'd want to properly serialize each record type
+            jsonObject.put("recordType", record.javaClass.simpleName)
+            jsonObject.put("recordData", record.toString())
+
+            jsonArray.put(jsonObject)
+        }
+
+        val result = JSONObject().apply {
+            put("recordType", fetchedRecords.recordTypeConfig.displayName)
+            put("category", fetchedRecords.recordTypeConfig.category)
+            put("totalRecords", fetchedRecords.count)
+            put("records", jsonArray)
+        }
+
+        return result.toString(2)
+    }
+
+    /**
+     * Exports all records for a category to a single JSON file.
+     * 
+     * @param categoryRecords Map of record type display name to fetched records
+     * @param category The category name
+     * @return JSON string containing all record types for the category
+     */
+    fun exportCategoryToJson(
+        categoryRecords: Map<String, FetchedRecords>,
+        category: String
+    ): String {
+        val categoryJson = JSONObject()
+        val recordTypesJson = JSONObject()
+
+        var totalRecordsInCategory = 0
+
+        categoryRecords.forEach { (displayName, fetchedRecords) ->
+            val recordTypeJson = JSONObject().apply {
+                put("displayName", fetchedRecords.recordTypeConfig.displayName)
+                put("category", fetchedRecords.recordTypeConfig.category)
+                put("totalRecords", fetchedRecords.count) // Will be 0 if no data
+                put("hasData", fetchedRecords.count > 0) // Explicit flag for whether data exists
+                
+                // Create records array (will be empty array if count is 0)
+                val recordsArray = JSONArray()
+                if (fetchedRecords.count > 0) {
+                    fetchedRecords.records.forEach { record ->
+                        val recordJson = JSONObject().apply {
+                            put("recordType", record.javaClass.simpleName)
+                            
+                            // Try to extract common fields
+                            try {
+                                val startTimeMethod = record.javaClass.getMethod("getStartTime")
+                                val startTime = startTimeMethod.invoke(record)
+                                put("startTime", startTime.toString())
+                            } catch (e: Exception) {}
+                            
+                            try {
+                                val endTimeMethod = record.javaClass.getMethod("getEndTime")
+                                val endTime = endTimeMethod.invoke(record)
+                                put("endTime", endTime.toString())
+                            } catch (e: Exception) {}
+                            
+                            // Add full record data as string (can be improved with proper serialization)
+                            put("data", record.toString())
+                        }
+                        recordsArray.put(recordJson)
+                    }
+                }
+                // If count is 0, records array will be empty []
+                put("records", recordsArray)
+            }
+            
+            recordTypesJson.put(displayName, recordTypeJson)
+            totalRecordsInCategory += fetchedRecords.count
+        }
+
+        categoryJson.apply {
+            put("category", category)
+            put("totalRecordTypes", categoryRecords.size)
+            put("totalRecords", totalRecordsInCategory)
+            put("recordTypes", recordTypesJson)
+        }
+
+        return categoryJson.toString(2)
+    }
+
+    /**
+     * Exports all categories to separate JSON files.
+     * Creates one file per category.
+     * 
+     * @param allFetchedRecords Map of category to map of record types
+     * @param baseDir The base directory for saving files
+     * @return Map of category name to file save success status
+     */
+    fun exportAllCategoriesToFiles(
+        allFetchedRecords: Map<String, Map<String, FetchedRecords>>,
+        baseDir: File
+    ): Map<String, Boolean> {
+        val results = mutableMapOf<String, Boolean>()
+
+        allFetchedRecords.forEach { (category, categoryRecords) ->
+            try {
+                val jsonString = exportCategoryToJson(categoryRecords, category)
+                val fileName = "${category.lowercase().replace(" ", "_")}_data.json"
+                val file = File(baseDir, fileName)
+
+                // Create parent directories if they don't exist
+                file.parentFile?.mkdirs()
+
+                // Write JSON to file
+                file.writeText(jsonString)
+                
+                results[category] = true
+                Log.d(TAG, "Exported category '$category' to file: ${file.absolutePath}")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error exporting category: $category", e)
+                results[category] = false
+            }
+        }
+
+        return results
+    }
+
+    /**
+     * Exports all data to a single comprehensive JSON file.
+     * 
+     * @param allFetchedRecords Map of category to map of record types
+     * @param baseDir The base directory for saving files
+     * @param fileName The file name (default: "all_health_data.json")
+     * @return true if successful, false otherwise
+     */
+    fun exportAllToSingleFile(
+        allFetchedRecords: Map<String, Map<String, FetchedRecords>>,
+        baseDir: File,
+        fileName: String = "all_health_data.json"
+    ): Boolean {
+        return try {
+            val allDataJson = JSONObject()
+            val categoriesJson = JSONObject()
+
+            var totalCategories = 0
+            var totalRecordTypes = 0
+            var totalRecords = 0
+
+            allFetchedRecords.forEach { (category, categoryRecords) ->
+                val categoryJson = JSONObject().apply {
+                    put("category", category)
+                    put("recordTypes", categoryRecords.size)
+                    put("totalRecords", categoryRecords.values.sumOf { it.count })
+                }
+                categoriesJson.put(category, categoryJson)
+                
+                totalCategories++
+                totalRecordTypes += categoryRecords.size
+                totalRecords += categoryRecords.values.sumOf { it.count }
+            }
+
+            allDataJson.apply {
+                put("totalCategories", totalCategories)
+                put("totalRecordTypes", totalRecordTypes)
+                put("totalRecords", totalRecords)
+                put("exportDate", System.currentTimeMillis())
+                put("categories", categoriesJson)
+            }
+
+            val file = File(baseDir, fileName)
+            file.parentFile?.mkdirs()
+            file.writeText(allDataJson.toString(2))
+
+            Log.d(TAG, "Exported all data to file: ${file.absolutePath}")
+            Log.d(TAG, "Summary: $totalCategories categories, $totalRecordTypes types, $totalRecords records")
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Error exporting all data to single file", e)
+            false
+        }
+    }
+
+    /**
+     * Gets file path for a category export file.
+     * 
+     * @param baseDir The base directory
+     * @param category The category name
+     * @return File object for the category export
+     */
+    fun getCategoryFile(baseDir: File, category: String): File {
+        val fileName = "${category.lowercase().replace(" ", "_")}_data.json"
+        return File(baseDir, fileName)
+    }
+}
+
