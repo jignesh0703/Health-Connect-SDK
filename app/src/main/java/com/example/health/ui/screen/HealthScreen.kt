@@ -2,6 +2,7 @@ package com.example.health.ui.screen
 
 import android.app.DatePickerDialog
 import android.content.Context
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -10,6 +11,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.health.connect.client.records.Record
+import com.example.health.data.model.DailySteps
+import com.example.health.data.model.HeartRateSample
+import com.example.health.data.repository.GenericHealthRepository
 import com.example.health.ui.components.AllHealthDataDisplay
 import com.example.health.ui.components.HeartRateCard
 import com.example.health.ui.components.StatusCard
@@ -28,7 +33,7 @@ fun HealthScreen(
     isHealthConnectAvailable: Boolean,
     onFetchData: suspend () -> Unit,
     onFetchAllHistoricalData: suspend () -> Unit,
-    onFetchAllHealthDataTypes: suspend (LocalDate?) -> Unit,
+    onFetchAllHealthDataTypes: suspend (LocalDate?, LocalDate?) -> Unit,
     onRequestPermissions: () -> Unit,
     steps: Long = 0L,
     heartRateSamples: Int = 0,
@@ -36,17 +41,51 @@ fun HealthScreen(
     status: String = "Ready to fetch data",
     errorMessage: String? = null,
     lastUpdateTime: String? = null,
-    allHealthData: Map<String, Map<String, Int>> = emptyMap()
+    // Updated to receive full records map
+    allHealthRecords: Map<String, Map<String, GenericHealthRepository.FetchedRecords>> = emptyMap(),
+    // Keep this for backwards compatibility if needed, or derived from allHealthRecords
+    allHealthData: Map<String, Map<String, Int>> = emptyMap(),
+    dailyStepsList: List<DailySteps> = emptyList(),
+    heartRateSampleList: List<HeartRateSample> = emptyList()
 ) {
     val scope = rememberCoroutineScope()
     var showAllDataScreen by remember { mutableStateOf(false) }
+    var showStepsDetailScreen by remember { mutableStateOf(false) }
+    var showHeartRateDetailScreen by remember { mutableStateOf(false) }
+    
+    // State for generic record detail view
+    var selectedRecordType by remember { mutableStateOf<String?>(null) }
+    var selectedCategory by remember { mutableStateOf<String?>(null) }
     
     // Date filter state
-    var selectedDate by remember { mutableStateOf(LocalDate.now()) }
+    var startDate by remember { mutableStateOf(LocalDate.now()) }
+    var endDate by remember { mutableStateOf(LocalDate.now()) }
     val context = LocalContext.current
 
-    // If showing all data screen, display full screen view
-    if (showAllDataScreen) {
+    // Navigation logic
+    if (selectedRecordType != null && selectedCategory != null) {
+        // Find the records for the selected type
+        val records = allHealthRecords[selectedCategory]?.get(selectedRecordType)?.records ?: emptyList()
+        
+        GenericRecordDetailScreen(
+            recordType = selectedRecordType!!,
+            records = records,
+            onBackClick = { 
+                selectedRecordType = null
+                selectedCategory = null
+            }
+        )
+    } else if (showStepsDetailScreen) {
+        StepsDetailScreen(
+            dailyStepsList = dailyStepsList,
+            onBackClick = { showStepsDetailScreen = false }
+        )
+    } else if (showHeartRateDetailScreen) {
+        HeartRateDetailScreen(
+            heartRateSamples = heartRateSampleList,
+            onBackClick = { showHeartRateDetailScreen = false }
+        )
+    } else if (showAllDataScreen) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -68,37 +107,74 @@ fun HealthScreen(
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.Bold
                 )
-                
-                // Date Picker Button
+            }
+            
+            // Date Range Picker Row
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                // Start Date Picker
                 Button(
                     onClick = {
-                        showDatePicker(context, selectedDate) { newDate ->
-                            selectedDate = newDate
-                            scope.launch {
-                                onFetchAllHealthDataTypes(newDate)
-                            }
+                        showDatePicker(context, startDate) { newDate ->
+                            startDate = newDate
                         }
                     },
                     colors = ButtonDefaults.buttonColors(
                         containerColor = MaterialTheme.colorScheme.secondaryContainer,
                         contentColor = MaterialTheme.colorScheme.onSecondaryContainer
-                    )
+                    ),
+                    modifier = Modifier.weight(1f).padding(end = 4.dp)
                 ) {
-                    Text(selectedDate.format(DateTimeFormatter.ofPattern("MMM dd")))
+                    Text("Start: " + startDate.format(DateTimeFormatter.ofPattern("MMM dd")))
                 }
+
+                // End Date Picker
+                Button(
+                    onClick = {
+                        showDatePicker(context, endDate) { newDate ->
+                            endDate = newDate
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                    ),
+                    modifier = Modifier.weight(1f).padding(start = 4.dp)
+                ) {
+                    Text("End: " + endDate.format(DateTimeFormatter.ofPattern("MMM dd")))
+                }
+            }
+
+            // Fetch Button
+            Button(
+                onClick = {
+                    scope.launch {
+                        onFetchAllHealthDataTypes(startDate, endDate)
+                    }
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Fetch Data for Range")
             }
 
             if (allHealthData.isNotEmpty()) {
                 AllHealthDataDisplay(
                     allHealthData = allHealthData,
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier.weight(1f),
+                    onRecordTypeClick = { recordType, category ->
+                        selectedRecordType = recordType
+                        selectedCategory = category
+                    }
                 )
             } else {
                 Box(
                     modifier = Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center
                 ) {
-                    Text("No data available. Go back and fetch data.")
+                    Text("No data available. Select dates and fetch data.")
                 }
             }
         }
@@ -128,17 +204,31 @@ fun HealthScreen(
                 modifier = Modifier.fillMaxWidth()
             )
 
-            // Steps card
+            // Steps card - Clickable to open details
             StepsCard(
                 steps = steps,
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { 
+                        // Only navigate if we have data or if the user wants to see history
+                        if (steps > 0 || dailyStepsList.isNotEmpty()) {
+                            showStepsDetailScreen = true 
+                        }
+                    }
             )
 
             // Heart rate card
             HeartRateCard(
                 samples = heartRateSamples,
                 heartRateValues = heartRateValues,
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable {
+                        // Only navigate if we have data or if the user wants to see history
+                        if (heartRateSamples > 0 || heartRateSampleList.isNotEmpty()) {
+                            showHeartRateDetailScreen = true
+                        }
+                    }
             )
 
             Spacer(modifier = Modifier.weight(1f))
@@ -185,7 +275,7 @@ fun HealthScreen(
                 Button(
                     onClick = {
                         scope.launch {
-                            onFetchAllHealthDataTypes(null) // null means fetch all
+                            onFetchAllHealthDataTypes(null, null) // null means fetch all history
                             showAllDataScreen = true
                         }
                     },

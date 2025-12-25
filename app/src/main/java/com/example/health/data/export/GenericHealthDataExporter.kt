@@ -100,6 +100,9 @@ object GenericHealthDataExporter {
                 
                 // Create records array (will be empty array if count is 0)
                 val recordsArray = JSONArray()
+                
+                // ALWAYS include records, even if count is 0 (it will just be an empty array)
+                // If fetchedRecords.count > 0, we populate it
                 if (fetchedRecords.count > 0) {
                     fetchedRecords.records.forEach { record ->
                         val recordJson = JSONObject().apply {
@@ -246,4 +249,3 @@ object GenericHealthDataExporter {
         return File(baseDir, fileName)
     }
 }
-

@@ -15,6 +15,8 @@ import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.PermissionController
 import com.example.health.data.export.GenericHealthDataExporter
 import com.example.health.data.export.HealthDataExporter
+import com.example.health.data.model.DailySteps
+import com.example.health.data.model.HeartRateSample
 import com.example.health.data.repository.GenericHealthRepository
 import com.example.health.data.repository.HealthRepository
 import com.example.health.ui.screen.HealthScreen
@@ -149,6 +151,10 @@ class MainActivity : ComponentActivity() {
         var errorMessage by remember { mutableStateOf<String?>(null) }
         var lastUpdateTime by remember { mutableStateOf<String?>(null) }
         var allHealthData by remember { mutableStateOf<Map<String, Map<String, Int>>>(emptyMap()) }
+        // NEW: Store full records to pass to detail screen
+        var allHealthRecords by remember { mutableStateOf<Map<String, Map<String, GenericHealthRepository.FetchedRecords>>>(emptyMap()) }
+        var dailyStepsList by remember { mutableStateOf<List<DailySteps>>(emptyList()) }
+        var heartRateSampleList by remember { mutableStateOf<List<HeartRateSample>>(emptyList()) }
         var hasAutoFetched by remember { mutableStateOf(false) }
 
         val scope = rememberCoroutineScope()
@@ -163,7 +169,7 @@ class MainActivity : ComponentActivity() {
                 kotlinx.coroutines.delay(1000)
                 try {
                     hasAutoFetched = true
-//                    fetchAllHealthDataTypes(null)
+//                    fetchAllHealthDataTypes(null, null)
                 } catch (e: UninitializedPropertyAccessException) {
                     Log.e(TAG, "Repository not initialized yet: ${e.message}")
                     errorMessage = "Initializing repository..."
@@ -279,6 +285,8 @@ class MainActivity : ComponentActivity() {
                     steps = historicalData.totalSteps
                     heartRateSamples = historicalData.totalHeartRateSamples
                     heartRateValues = historicalData.heartRateSamples.map { it.beatsPerMinute }
+                    dailyStepsList = historicalData.dailySteps
+                    heartRateSampleList = historicalData.heartRateSamples
                     
                     lastUpdateTime = ZonedDateTime.now()
                         .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))
@@ -306,9 +314,10 @@ class MainActivity : ComponentActivity() {
          * This is the comprehensive method that fetches everything available in Health Connect.
          * This function is called automatically when the app starts.
          *
-         * @param dateFilter Optional date to filter records. If null, fetches all historical data.
+         * @param startDate Optional start date to filter records. If null, fetches from historical start.
+         * @param endDate Optional end date to filter records. If null, fetches until now.
          */
-        suspend fun fetchAllHealthDataTypes(dateFilter: LocalDate? = null) {
+        suspend fun fetchAllHealthDataTypes(startDate: LocalDate? = null, endDate: LocalDate? = null) {
             if (!isHealthConnectAvailable) {
                 errorMessage = "Health Connect SDK not available on this device"
                 status = "Health Connect SDK Unavailable"
@@ -333,33 +342,28 @@ class MainActivity : ComponentActivity() {
                 status = "Checking permissions for all data types..."
                 errorMessage = null
 
-                val startTime = if (dateFilter != null) {
-                    dateFilter.atStartOfDay(ZoneId.systemDefault()).toInstant()
+                val startTime = if (startDate != null) {
+                    startDate.atStartOfDay(ZoneId.systemDefault()).toInstant()
                 } else {
-                    // Default historical start date handled by repository if null passed, 
-                    // but we need to pass a value.
-                    // We can access HISTORICAL_START_DATE if we make it public or duplicate logic.
-                    // Let's assume repo defaults are good for historical.
-                    // However, we need to pass something if we call the method with args.
-                    // We'll calculate a historical date here.
+                    // Default historical start date
                     ZonedDateTime.of(2020, 1, 1, 0, 0, 0, 0, ZoneId.systemDefault()).toInstant()
                 }
 
-                val endTime = if (dateFilter != null) {
-                    dateFilter.atTime(23, 59, 59).atZone(ZoneId.systemDefault()).toInstant()
+                val endTime = if (endDate != null) {
+                    endDate.atTime(23, 59, 59).atZone(ZoneId.systemDefault()).toInstant()
                 } else {
                     java.time.Instant.now()
                 }
 
                 // For now, we'll try to fetch even if not all permissions are granted
                 // Health Connect will simply return empty results for types without permission
-                status = if (dateFilter != null) {
-                    "Fetching data for ${dateFilter.format(DateTimeFormatter.ISO_LOCAL_DATE)}..."
+                status = if (startDate != null && endDate != null) {
+                    "Fetching data from ${startDate.format(DateTimeFormatter.ISO_LOCAL_DATE)} to ${endDate.format(DateTimeFormatter.ISO_LOCAL_DATE)}..."
                 } else {
                     "Fetching ALL historical health data..."
                 }
                 
-                Log.d(TAG, "Starting to fetch health data types. Filter: $dateFilter ($startTime to $endTime)")
+                Log.d(TAG, "Starting to fetch health data types. Range: $startTime to $endTime")
 
                 // Fetch all records for all categories with the specified time range
                 val allFetchedRecords = genericHealthRepository.fetchAllRecordsForAllCategories(
@@ -404,20 +408,22 @@ class MainActivity : ComponentActivity() {
                 
                 // Update UI state with all health data
                 allHealthData = uiHealthData
+                
+                // Store full records map for detail view
+                allHealthRecords = allFetchedRecords
 
                 // Check export results
                 val successCount = exportResults.values.count { it }
                 val totalCount = exportResults.size
                 
                 if (successCount == totalCount && summaryExported) {
-                    status = if (dateFilter != null) {
-                        "Data for ${dateFilter.format(DateTimeFormatter.ofPattern("MMM dd"))} fetched!"
+                    status = if (startDate != null && endDate != null) {
+                        "Data for ${startDate.format(DateTimeFormatter.ofPattern("MMM dd"))} - ${endDate.format(DateTimeFormatter.ofPattern("MMM dd"))} fetched!"
                     } else {
                         "All historical data fetched!"
                     }
                     errorMessage = null
                     
-                    // Update UI with summary
                     // Update UI with summary
                     // Calculate total records across all categories and types
                     val totalRecords = allFetchedRecords.values.sumOf { categoryMap ->
@@ -425,9 +431,6 @@ class MainActivity : ComponentActivity() {
                     }
 
                     steps = totalRecords.toLong() // Display total records count in the steps field for summary
-
-//                    val totalRecords = allFetchedRecords.values.flatten().sumOf { it.value.count }
-//                    steps = totalRecords.toLong() // Use total records as a summary
                     heartRateSamples = totalCount // Use category count
                     
                     lastUpdateTime = ZonedDateTime.now()
@@ -476,7 +479,7 @@ class MainActivity : ComponentActivity() {
             isHealthConnectAvailable = isHealthConnectAvailable,
             onFetchData = { fetchHealthData() },
             onFetchAllHistoricalData = { fetchAllHistoricalData() },
-            onFetchAllHealthDataTypes = { date -> fetchAllHealthDataTypes(date) },
+            onFetchAllHealthDataTypes = { startDate, endDate -> fetchAllHealthDataTypes(startDate, endDate) },
             onRequestPermissions = { requestPermissions() },
             steps = steps,
             heartRateSamples = heartRateSamples,
@@ -484,7 +487,10 @@ class MainActivity : ComponentActivity() {
             status = status,
             errorMessage = errorMessage,
             lastUpdateTime = lastUpdateTime,
-            allHealthData = allHealthData
+            allHealthData = allHealthData,
+            allHealthRecords = allHealthRecords, // Pass full records map
+            dailyStepsList = dailyStepsList,
+            heartRateSampleList = heartRateSampleList
         )
     }
 }

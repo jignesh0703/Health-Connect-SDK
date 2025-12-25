@@ -16,6 +16,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.health.connect.client.records.Record
 
 /**
  * Data class representing health data summary for UI display.
@@ -30,11 +31,13 @@ data class HealthDataUISummary(
  * 
  * @param allHealthData Map of category name to map of record type name to count
  * @param modifier Modifier for the composable
+ * @param onRecordTypeClick Callback when a record type is clicked, passing the record type name and category
  */
 @Composable
 fun AllHealthDataDisplay(
     allHealthData: Map<String, Map<String, Int>>,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onRecordTypeClick: (String, String) -> Unit = { _, _ -> }
 ) {
     if (allHealthData.isEmpty()) {
         Card(
@@ -111,7 +114,8 @@ fun AllHealthDataDisplay(
                 totalTypes = recordTypes.size,
                 totalRecords = totalRecords,
                 typesWithData = typesWithData,
-                recordTypes = recordTypes
+                recordTypes = recordTypes,
+                onRecordTypeClick = { recordType -> onRecordTypeClick(recordType, categoryName) }
             )
         }
     }
@@ -123,9 +127,11 @@ fun ExpandableCategory(
     totalTypes: Int,
     totalRecords: Int,
     typesWithData: Int,
-    recordTypes: Map<String, Int>
+    recordTypes: Map<String, Int>,
+    onRecordTypeClick: (String) -> Unit
 ) {
-    var expanded by remember { mutableStateOf(true) }
+    // If we have records in this category, default to expanded, otherwise collapsed
+    var expanded by remember { mutableStateOf(totalRecords > 0) } 
 
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -183,10 +189,17 @@ fun ExpandableCategory(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 recordTypes.forEach { (recordTypeName, count) ->
+                    // Make it clickable even if count is 0, so user can see empty state detail if they want
+                    // Or keep it clickable only if count > 0?
+                    // User request: "only saw their value like weight, heath this type of data only have one value not sample so saw them like that managae that also"
+                    // This is handled in the detail screen, but we need to ensure the click listener is attached
+                    
                     HealthRecordTypeItem(
                         recordTypeName = recordTypeName,
                         recordCount = count,
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onRecordTypeClick(recordTypeName) }
                     )
                 }
             }
