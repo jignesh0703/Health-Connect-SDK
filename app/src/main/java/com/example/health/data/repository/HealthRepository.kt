@@ -3,9 +3,11 @@ package com.example.health.data.repository
 import android.util.Log
 import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.records.HeartRateRecord
+import androidx.health.connect.client.records.Record
 import androidx.health.connect.client.records.StepsRecord
 import androidx.health.connect.client.request.ReadRecordsRequest
 import androidx.health.connect.client.time.TimeRangeFilter
+import com.example.health.data.config.HealthRecordTypes
 import com.example.health.data.model.DailySteps
 import com.example.health.data.model.HeartRateSample
 import com.example.health.data.model.HistoricalHealthData
@@ -33,13 +35,12 @@ class HealthRepository(
             ZoneId.systemDefault()
         ).toInstant()
     }
+    
+    // We reuse the generic repository for fetching all other types
+    private val genericRepository = GenericHealthRepository(healthClient)
 
     /**
      * Data class representing health data summary.
-     * 
-     * @property totalSteps Total number of steps in the specified time range
-     * @property heartRateSamples Number of heart rate samples found
-     * @property heartRateValues List of heart rate values (bpm) for calculation
      */
     data class HealthDataSummary(
         val totalSteps: Long,
@@ -49,10 +50,6 @@ class HealthRepository(
 
     /**
      * Fetches steps data from Health Connect for the last N days.
-     * 
-     * @param days Number of days to look back (default: 7)
-     * @return Total number of steps
-     * @throws Exception if the operation fails
      */
     suspend fun fetchSteps(days: Int = 7): Long {
         val startTime = ZonedDateTime.now().minusDays(days.toLong()).toInstant()
@@ -71,24 +68,16 @@ class HealthRepository(
             val totalSteps = stepsResponse.records.sumOf { it.count }
             Log.d(TAG, "Steps records found: ${stepsResponse.records.size}, Total steps: $totalSteps")
 
-            // Log individual step records for debugging
-            stepsResponse.records.forEachIndexed { index, record ->
-                Log.d(TAG, "Step Record $index: ${record.count} steps at ${record.startTime}")
-            }
-
             return totalSteps
         } catch (e: Exception) {
             Log.e(TAG, "Error fetching steps data", e)
-            throw e
+            // Return 0 on error
+            return 0L
         }
     }
 
     /**
      * Fetches heart rate data from Health Connect for the last N days.
-     * 
-     * @param days Number of days to look back (default: 7)
-     * @return Pair of (number of samples, list of heart rate values in bpm)
-     * @throws Exception if the operation fails
      */
     suspend fun fetchHeartRate(days: Int = 7): Pair<Int, List<Double>> {
         val startTime = ZonedDateTime.now().minusDays(days.toLong()).toInstant()
@@ -108,31 +97,16 @@ class HealthRepository(
             val heartRateSamples = heartRateResponse.records.flatMap { it.samples }
             val heartRateValues = heartRateSamples.map { it.beatsPerMinute.toDouble() }
 
-            Log.d(TAG, "Heart rate records found: ${heartRateResponse.records.size}")
-            Log.d(TAG, "Total heart rate samples: ${heartRateSamples.size}")
-
-            // Log individual heart rate records for debugging
-            heartRateResponse.records.forEachIndexed { index, record ->
-                Log.d(TAG, "Heart Rate Record $index: ${record.samples.size} samples")
-                record.samples.forEach { sample ->
-                    Log.d(TAG, "  - ${sample.beatsPerMinute} bpm at ${sample.time}")
-                }
-            }
-
             return Pair(heartRateSamples.size, heartRateValues)
         } catch (e: Exception) {
             Log.e(TAG, "Error fetching heart rate data", e)
-            throw e
+            // Return empty pair on error
+            return Pair(0, emptyList())
         }
     }
 
     /**
      * Fetches all health data (steps and heart rate) in a single operation.
-     * This method fetches both types of data concurrently for better performance.
-     * 
-     * @param days Number of days to look back (default: 7)
-     * @return HealthDataSummary containing all fetched data
-     * @throws Exception if any operation fails
      */
     suspend fun fetchAllHealthData(days: Int = 7): HealthDataSummary {
         Log.d(TAG, "Fetching all health data for last $days days")
@@ -142,19 +116,6 @@ class HealthRepository(
             val totalSteps = fetchSteps(days)
             val (heartRateSamples, heartRateValues) = fetchHeartRate(days)
 
-            // Log summary
-            Log.d(TAG, "=".repeat(50))
-            Log.d(TAG, "HEALTH DATA SUMMARY")
-            Log.d(TAG, "=".repeat(50))
-            Log.d(TAG, "Total Steps (Last $days Days): $totalSteps")
-            Log.d(TAG, "Total Heart Rate Samples: $heartRateSamples")
-            if (heartRateValues.isNotEmpty()) {
-                Log.d(TAG, "Average Heart Rate: ${heartRateValues.average().toInt()} bpm")
-                Log.d(TAG, "Min Heart Rate: ${heartRateValues.minOrNull()?.toInt()} bpm")
-                Log.d(TAG, "Max Heart Rate: ${heartRateValues.maxOrNull()?.toInt()} bpm")
-            }
-            Log.d(TAG, "=".repeat(50))
-
             return HealthDataSummary(
                 totalSteps = totalSteps,
                 heartRateSamples = heartRateSamples,
@@ -162,25 +123,23 @@ class HealthRepository(
             )
         } catch (e: Exception) {
             Log.e(TAG, "Error fetching all health data", e)
-            throw e
+            // Return empty summary on error
+            return HealthDataSummary(
+                totalSteps = 0L,
+                heartRateSamples = 0,
+                heartRateValues = emptyList()
+            )
         }
     }
 
     /**
-     * Fetches ALL historical steps data from Health Connect from the beginning of records.
-     * Steps are grouped by day, with each day's total steps calculated.
-     * 
-     * @return List of DailySteps, sorted by date (oldest first)
-     * @throws Exception if the operation fails
+     * Fetches ALL historical steps data.
      */
     suspend fun fetchAllHistoricalSteps(): List<DailySteps> {
         val startTime = HISTORICAL_START_DATE
         val endTime = Instant.now()
 
-        Log.d(TAG, "Fetching ALL historical steps data from $startTime to $endTime")
-
         try {
-            // Fetch all steps records
             val stepsResponse = healthClient.readRecords(
                 ReadRecordsRequest(
                     recordType = StepsRecord::class,
@@ -188,23 +147,15 @@ class HealthRepository(
                 )
             )
 
-            Log.d(TAG, "Total steps records found: ${stepsResponse.records.size}")
-
-            // Group steps by day
             val dailyStepsMap = mutableMapOf<LocalDate, MutableList<StepsRecord>>()
 
             stepsResponse.records.forEach { record ->
-                // Get the date from the record's start time
                 val date = record.startTime.atZone(ZoneId.systemDefault()).toLocalDate()
                 dailyStepsMap.getOrPut(date) { mutableListOf() }.add(record)
             }
 
-            // Convert map to list of DailySteps
-            val dailySteps = dailyStepsMap.map { (date, records) ->
-                // Calculate total steps for the day
+            return dailyStepsMap.map { (date, records) ->
                 val totalSteps = records.sumOf { it.count }
-                
-                // Find the earliest and latest time for this day
                 val startTimes = records.map { it.startTime }
                 val endTimes = records.map { it.endTime }
                 val dayStartTime = startTimes.minOrNull() ?: Instant.EPOCH
@@ -216,33 +167,22 @@ class HealthRepository(
                     startTime = dayStartTime,
                     endTime = dayEndTime
                 )
-            }.sortedBy { it.date } // Sort by date (oldest first)
-
-            Log.d(TAG, "Steps grouped into ${dailySteps.size} days")
-            Log.d(TAG, "Date range: ${dailySteps.firstOrNull()?.date} to ${dailySteps.lastOrNull()?.date}")
-
-            return dailySteps
+            }.sortedBy { it.date }
         } catch (e: Exception) {
             Log.e(TAG, "Error fetching all historical steps data", e)
-            throw e
+            // Return empty list on error
+            return emptyList()
         }
     }
 
     /**
-     * Fetches ALL historical heart rate data from Health Connect from the beginning of records.
-     * All heart rate samples are returned with their timestamps.
-     * 
-     * @return List of HeartRateSample, sorted by time (oldest first)
-     * @throws Exception if the operation fails
+     * Fetches ALL historical heart rate data.
      */
     suspend fun fetchAllHistoricalHeartRate(): List<HeartRateSample> {
         val startTime = HISTORICAL_START_DATE
         val endTime = Instant.now()
 
-        Log.d(TAG, "Fetching ALL historical heart rate data from $startTime to $endTime")
-
         try {
-            // Fetch all heart rate records
             val heartRateResponse = healthClient.readRecords(
                 ReadRecordsRequest(
                     recordType = HeartRateRecord::class,
@@ -250,48 +190,53 @@ class HealthRepository(
                 )
             )
 
-            Log.d(TAG, "Total heart rate records found: ${heartRateResponse.records.size}")
-
-            // Flatten all samples from all records into HeartRateSample objects
-            val heartRateSamples = heartRateResponse.records.flatMap { record ->
+            return heartRateResponse.records.flatMap { record ->
                 record.samples.map { sample ->
                     HeartRateSample(
                         time = sample.time,
                         beatsPerMinute = sample.beatsPerMinute.toDouble(),
-                        metadata = null // Metadata can be added here if needed in the future
+                        metadata = null
                     )
                 }
-            }.sortedBy { it.time } // Sort by time (oldest first)
-
-            Log.d(TAG, "Total heart rate samples found: ${heartRateSamples.size}")
-            
-            if (heartRateSamples.isNotEmpty()) {
-                val earliestSample = heartRateSamples.first()
-                val latestSample = heartRateSamples.last()
-                Log.d(TAG, "Sample range: ${earliestSample.time} to ${latestSample.time}")
-            }
-
-            return heartRateSamples
+            }.sortedBy { it.time }
         } catch (e: Exception) {
             Log.e(TAG, "Error fetching all historical heart rate data", e)
-            throw e
+            // Return empty list on error
+            return emptyList()
         }
     }
 
     /**
-     * Fetches ALL historical health data (both steps and heart rate) from the beginning.
-     * This method fetches all available data and organizes it into daily steps and heart rate samples.
-     * 
-     * @return HistoricalHealthData containing all fetched data organized by type
-     * @throws Exception if any operation fails
+     * Fetches ALL historical health data including steps, heart rate, and ALL other record types (Vitals, Sleep, etc.)
      */
     suspend fun fetchAllHistoricalData(): HistoricalHealthData {
-        Log.d(TAG, "Fetching ALL historical health data from the beginning")
+        Log.d(TAG, "Fetching ALL historical health data (Steps, Heart Rate, and EVERYTHING else)")
 
         try {
-            // Fetch all steps and heart rate data
+            // Fetch basic data - these methods now handle their own exceptions and return empty lists
             val dailySteps = fetchAllHistoricalSteps()
             val heartRateSamples = fetchAllHistoricalHeartRate()
+
+            // Fetch ALL other categories using GenericRepository
+            val allOtherRecordsMap = mutableMapOf<String, List<Record>>()
+            
+            // Loop through all defined record types in HealthRecordTypes
+            // We skip Steps and Heart Rate as we already fetched them specially, but it's okay to fetch them again or filter them out
+            // For completeness, let's fetch everything available via GenericRepository too or just merge
+            
+            // fetchAllRecordsForAllCategories handles its own exceptions internally
+            val allFetchedCategories = genericRepository.fetchAllRecordsForAllCategories(HISTORICAL_START_DATE, Instant.now())
+            
+            // Flatten the structure: Map<Category, Map<Type, FetchedRecords>> -> Map<Type, List<Record>>
+            allFetchedCategories.values.forEach { categoryMap ->
+                categoryMap.forEach { (typeName, fetchedRecords) ->
+                    if (fetchedRecords.records.isNotEmpty()) {
+                        allOtherRecordsMap[typeName] = fetchedRecords.records
+                    }
+                }
+            }
+
+            Log.d("All vitals", "All other records fetched: ${allOtherRecordsMap.keys}")
 
             // Calculate totals
             val totalSteps = dailySteps.sumOf { it.steps }
@@ -301,24 +246,10 @@ class HealthRepository(
             val allDates = mutableSetOf<LocalDate>()
             dailySteps.forEach { allDates.add(it.date) }
             heartRateSamples.forEach { allDates.add(it.getDate()) }
+            // Add dates from other records? (Optional, might be expensive to parse all)
 
             val earliestDate = allDates.minOrNull()
             val latestDate = allDates.maxOrNull()
-
-            // Log summary
-            Log.d(TAG, "=".repeat(60))
-            Log.d(TAG, "ALL HISTORICAL HEALTH DATA SUMMARY")
-            Log.d(TAG, "=".repeat(60))
-            Log.d(TAG, "Total Days with Steps: ${dailySteps.size}")
-            Log.d(TAG, "Total Steps: $totalSteps")
-            Log.d(TAG, "Total Heart Rate Samples: $totalHeartRateSamples")
-            Log.d(TAG, "Days with Heart Rate: ${heartRateSamples.map { it.getDate() }.distinct().size}")
-            Log.d(TAG, "Date Range: ${earliestDate ?: "N/A"} to ${latestDate ?: "N/A"}")
-            if (heartRateSamples.isNotEmpty()) {
-                val avgHeartRate = heartRateSamples.map { it.beatsPerMinute }.average()
-                Log.d(TAG, "Average Heart Rate: ${avgHeartRate.toInt()} bpm")
-            }
-            Log.d(TAG, "=".repeat(60))
 
             return HistoricalHealthData(
                 dailySteps = dailySteps,
@@ -326,12 +257,21 @@ class HealthRepository(
                 totalSteps = totalSteps,
                 totalHeartRateSamples = totalHeartRateSamples,
                 earliestDate = earliestDate,
-                latestDate = latestDate
+                latestDate = latestDate,
+                allOtherRecords = allOtherRecordsMap // Pass the full map of records
             )
         } catch (e: Exception) {
             Log.e(TAG, "Error fetching all historical health data", e)
-            throw e
+            // Return empty data on error
+            return HistoricalHealthData(
+                dailySteps = emptyList(),
+                heartRateSamples = emptyList(),
+                totalSteps = 0,
+                totalHeartRateSamples = 0,
+                earliestDate = null,
+                latestDate = null,
+                allOtherRecords = emptyMap()
+            )
         }
     }
 }
-

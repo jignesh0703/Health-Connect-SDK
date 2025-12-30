@@ -34,11 +34,13 @@ class GenericHealthRepository(
      * @property recordTypeConfig The configuration for this record type
      * @property records The list of fetched records
      * @property count Total number of records fetched
+     * @property isPermissionDenied Whether the permission was denied for this record type
      */
     data class FetchedRecords(
         val recordTypeConfig: HealthRecordTypes.RecordTypeConfig,
         val records: List<Record>,
-        val count: Int
+        val count: Int,
+        val isPermissionDenied: Boolean = false
     )
 
     /**
@@ -65,9 +67,22 @@ class GenericHealthRepository(
             Log.d(TAG, "Fetched ${records.size} records for type: ${recordClass.simpleName}")
 
             records
+        } catch (e: SecurityException) {
+            // Permission denied - return empty list, do NOT rethrow
+            Log.w(TAG, "Permission denied for ${recordClass.simpleName}, returning empty list.")
+            emptyList()
+        } catch (e: IllegalArgumentException) {
+            // Invalid arguments - return empty list
+            Log.w(TAG, "Invalid arguments for ${recordClass.simpleName}: ${e.message}")
+            emptyList()
+        } catch (e: IllegalStateException) {
+            // Invalid state - return empty list
+            Log.w(TAG, "Invalid state for ${recordClass.simpleName}: ${e.message}")
+            emptyList()
         } catch (e: Exception) {
-            Log.e(TAG, "Error fetching records for type: ${recordClass.simpleName}", e)
-            emptyList() // Return empty list on error to allow other records to be fetched
+            // Catch all other exceptions - log and return empty list to continue
+            Log.e(TAG, "Error fetching records for type: ${recordClass.simpleName} (${e.javaClass.simpleName})", e)
+            emptyList() 
         }
     }
 
@@ -97,14 +112,33 @@ class GenericHealthRepository(
             
             // Log clearly whether data was found or not
             if (recordCount > 0) {
-                Log.d(TAG, "  Fetched $recordCount records for ${recordClass.simpleName} ($startTime to $endTime)")
-                Log.d(TAG, "    Sample data (first record): ${records.first()}")
+                Log.d(TAG, "  ✓ Fetched $recordCount records for ${recordClass.simpleName}")
+            } else {
+                Log.d(TAG, "  ○ No records found for ${recordClass.simpleName}")
             }
 
             records
+        } catch (e: SecurityException) {
+            // Re-throw SecurityException so the caller (fetchAllRecordsForCategory) can handle it 
+            // and mark the specific record type as permission denied
+            Log.w(TAG, "  ✗ Permission denied for ${recordClass.simpleName}")
+            throw e
+        } catch (e: IllegalArgumentException) {
+            // Invalid arguments - log and return empty list
+            Log.w(TAG, "  ✗ Invalid arguments for ${recordClass.simpleName}: ${e.message}")
+            emptyList()
+        } catch (e: IllegalStateException) {
+            // Invalid state - log and return empty list
+            Log.w(TAG, "  ✗ Invalid state for ${recordClass.simpleName}: ${e.message}")
+            emptyList()
+        } catch (e: UnsupportedOperationException) {
+            // Operation not supported - log and return empty list
+            Log.w(TAG, "  ✗ Operation not supported for ${recordClass.simpleName}: ${e.message}")
+            emptyList()
         } catch (e: Exception) {
-            Log.w(TAG, "Error fetching ${recordClass.simpleName}: ${e.message} (returning 0)")
-            emptyList() // Return empty list (0 records) on error
+            // Catch all other exceptions - log and return empty list to continue with other types
+            Log.w(TAG, "  ✗ Error fetching ${recordClass.simpleName}: ${e.javaClass.simpleName} - ${e.message}")
+            emptyList() 
         }
     }
 
@@ -128,6 +162,7 @@ class GenericHealthRepository(
         val fetchedRecords = mutableMapOf<String, FetchedRecords>()
 
         // Loop through all record types in the category - ensure ALL are included
+        // Continue even if some fail - this is critical for SDK robustness
         for (recordConfig in recordTypes) {
             try {
                 val records = fetchRecordsForTypeUnsafe(recordConfig.recordClass, startTime, endTime)
@@ -139,14 +174,46 @@ class GenericHealthRepository(
                     records = records,
                     count = recordCount
                 )
+            } catch (e: SecurityException) {
+                // Specific handling for SecurityException - catch here to allow loop to continue
+                Log.w(TAG, "Permission denied for ${recordConfig.displayName} - continuing with other types")
+                fetchedRecords[recordConfig.displayName] = FetchedRecords(
+                    recordTypeConfig = recordConfig,
+                    records = emptyList(),
+                    count = 0,
+                    isPermissionDenied = true
+                )
+                // Continue to next record type - don't break the loop
+            } catch (e: IllegalArgumentException) {
+                // Invalid arguments - log and continue
+                Log.w(TAG, "Invalid arguments for ${recordConfig.displayName}: ${e.message} - continuing")
+                fetchedRecords[recordConfig.displayName] = FetchedRecords(
+                    recordTypeConfig = recordConfig,
+                    records = emptyList(),
+                    count = 0,
+                    isPermissionDenied = false
+                )
+            } catch (e: IllegalStateException) {
+                // Invalid state - log and continue
+                Log.w(TAG, "Invalid state for ${recordConfig.displayName}: ${e.message} - continuing")
+                fetchedRecords[recordConfig.displayName] = FetchedRecords(
+                    recordTypeConfig = recordConfig,
+                    records = emptyList(),
+                    count = 0,
+                    isPermissionDenied = false
+                )
             } catch (e: Exception) {
-                Log.e(TAG, "Error fetching records for ${recordConfig.displayName}: ${e.message}")
+                // Catch all other exceptions - log and continue with other types
+                Log.e(TAG, "Unexpected error fetching ${recordConfig.displayName}: ${e.javaClass.simpleName} - ${e.message} - continuing")
+                
                 // Even on error, include the record type with 0 count to show it was attempted
                 fetchedRecords[recordConfig.displayName] = FetchedRecords(
                     recordTypeConfig = recordConfig,
                     records = emptyList(),
-                    count = 0
+                    count = 0,
+                    isPermissionDenied = false
                 )
+                // Continue to next record type - critical for SDK robustness
             }
         }
 
@@ -176,15 +243,23 @@ class GenericHealthRepository(
         val allFetchedRecords = mutableMapOf<String, Map<String, FetchedRecords>>()
 
         // Loop through all categories - ensure ALL categories are included
+        // Continue even if some categories fail - critical for SDK robustness
         for ((category, _) in HealthRecordTypes.ALL_RECORDS_BY_CATEGORY) {
             try {
                 // Use fetchAllRecordsForCategory which internally fetches correct types
                 val categoryRecords = fetchAllRecordsForCategory(category, startTime, endTime)
                 allFetchedRecords[category] = categoryRecords
+                Log.d(TAG, "✓ Category '$category' fetched successfully")
+            } catch (e: SecurityException) {
+                // Permission error for entire category - log and continue
+                Log.w(TAG, "✗ Permission denied for category: $category - continuing with other categories")
+                allFetchedRecords[category] = emptyMap()
             } catch (e: Exception) {
-                Log.e(TAG, "Error fetching category: $category", e)
+                // Any other error - log and continue with other categories
+                Log.e(TAG, "✗ Error fetching category: $category (${e.javaClass.simpleName}) - ${e.message} - continuing", e)
                 // Even on error, create empty map for this category to show it was attempted
                 allFetchedRecords[category] = emptyMap()
+                // Continue to next category - don't break the entire fetch
             }
         }
 

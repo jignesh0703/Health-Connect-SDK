@@ -189,10 +189,7 @@ fun ExpandableCategory(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 recordTypes.forEach { (recordTypeName, count) ->
-                    // Make it clickable even if count is 0, so user can see empty state detail if they want
-                    // Or keep it clickable only if count > 0?
-                    // User request: "only saw their value like weight, heath this type of data only have one value not sample so saw them like that managae that also"
-                    // This is handled in the detail screen, but we need to ensure the click listener is attached
+                    // Make it clickable so user can see empty state detail if they want
                     
                     HealthRecordTypeItem(
                         recordTypeName = recordTypeName,

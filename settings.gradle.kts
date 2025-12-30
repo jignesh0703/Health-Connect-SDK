@@ -19,5 +19,6 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "Health"
+rootProject.name = "Health Connect SDK"
 include(":app")
+include(":healthsdk")

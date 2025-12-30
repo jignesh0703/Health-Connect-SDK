@@ -1,8 +1,10 @@
 package com.example.health.data.model
 
+import androidx.health.connect.client.records.Record
+
 /**
  * Data class representing all historical health data.
- * This contains all fetched steps and heart rate data organized by type.
+ * This contains all fetched steps and heart rate data organized by type, plus all other record types.
  * 
  * @property dailySteps List of daily steps, sorted by date (oldest first)
  * @property heartRateSamples List of all heart rate samples, sorted by time (oldest first)
@@ -10,6 +12,7 @@ package com.example.health.data.model
  * @property totalHeartRateSamples Total number of heart rate samples
  * @property earliestDate The earliest date in the data
  * @property latestDate The latest date in the data
+ * @property allOtherRecords Map of record type name to list of records (e.g. "Blood Glucose" -> [Record1, Record2])
  */
 data class HistoricalHealthData(
     val dailySteps: List<DailySteps>,
@@ -17,7 +20,9 @@ data class HistoricalHealthData(
     val totalSteps: Long,
     val totalHeartRateSamples: Int,
     val earliestDate: java.time.LocalDate?,
-    val latestDate: java.time.LocalDate?
+    val latestDate: java.time.LocalDate?,
+    // New field to hold all other fetched records (Vitals, Sleep, etc.)
+    val allOtherRecords: Map<String, List<Record>> = emptyMap()
 ) {
     /**
      * Gets the total number of days with step data.
@@ -46,4 +51,3 @@ data class HistoricalHealthData(
         }
     }
 }
-

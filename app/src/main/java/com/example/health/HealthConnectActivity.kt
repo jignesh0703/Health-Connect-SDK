@@ -242,6 +242,16 @@ class HealthConnectActivity : ComponentActivity() {
                 finish()
 
             } catch (e: Exception) {
+                if (e is SecurityException) {
+                    Log.e(TAG, "SecurityException reading health data", e)
+                    val resultIntent = Intent().apply {
+                        putExtra(EXTRA_ERROR_MESSAGE, e.toString())
+                    }
+                    setResult(RESULT_PERMISSIONS_DENIED, resultIntent)
+                    finish()
+                    return@launch
+                }
+
                 Log.e(TAG, "Error reading health data", e)
                 val resultIntent = Intent().apply {
                     putExtra(EXTRA_ERROR_MESSAGE, e.toString())

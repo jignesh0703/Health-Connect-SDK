@@ -13,6 +13,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.PermissionController
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.LifecycleOwner
 import com.example.health.data.export.GenericHealthDataExporter
 import com.example.health.data.export.HealthDataExporter
 import com.example.health.data.model.DailySteps
@@ -389,13 +392,29 @@ class MainActivity : ComponentActivity() {
                 // Get summary statistics
                 val summaryStats = genericHealthRepository.getSummaryStatistics(allFetchedRecords)
 
-                // Log summary
+                // Calculate statistics for better status messages
+                val totalRecords = allFetchedRecords.values.sumOf { categoryMap ->
+                    categoryMap.values.sumOf { it.count }
+                }
+                val totalTypesWithData = allFetchedRecords.values.sumOf { categoryMap ->
+                    categoryMap.values.count { it.count > 0 }
+                }
+                val totalTypesAttempted = allFetchedRecords.values.sumOf { it.size }
+                val typesWithPermissionDenied = allFetchedRecords.values.sumOf { categoryMap ->
+                    categoryMap.values.count { it.isPermissionDenied }
+                }
+
+                // Log summary with detailed information
                 Log.d(TAG, "=".repeat(60))
                 Log.d(TAG, "ALL HEALTH DATA FETCH AND EXPORT COMPLETE")
                 Log.d(TAG, "=".repeat(60))
+                Log.d(TAG, "Total records fetched: $totalRecords")
+                Log.d(TAG, "Types with data: $totalTypesWithData / $totalTypesAttempted")
+                if (typesWithPermissionDenied > 0) {
+                    Log.d(TAG, "Types with permission denied: $typesWithPermissionDenied")
+                }
                 summaryStats.forEach { (category, stats) ->
-//                    Log.d(TAG, "$category: ${stats.totalRecordTypes} types, ${stats.totalRecords} records")
-                    Log.d(TAG, "  - Types with data: ${stats.typesWithData}, Types without data: ${stats.typesWithoutData}")
+                    Log.d(TAG, "  $category: ${stats.typesWithData} types with data, ${stats.typesWithoutData} without")
                 }
                 Log.d(TAG, "=".repeat(60))
 
@@ -416,42 +435,139 @@ class MainActivity : ComponentActivity() {
                 val successCount = exportResults.values.count { it }
                 val totalCount = exportResults.size
                 
-                if (successCount == totalCount && summaryExported) {
-                    status = if (startDate != null && endDate != null) {
-                        "Data for ${startDate.format(DateTimeFormatter.ofPattern("MMM dd"))} - ${endDate.format(DateTimeFormatter.ofPattern("MMM dd"))} fetched!"
+                // Build comprehensive status message
+                val dateRangeText = if (startDate != null && endDate != null) {
+                    "${startDate.format(DateTimeFormatter.ofPattern("MMM dd"))} - ${endDate.format(DateTimeFormatter.ofPattern("MMM dd"))}"
+                } else {
+                    "all historical"
+                }
+                
+                // Determine status based on results
+                if (totalRecords > 0) {
+                    // We have data, show success even if some exports failed
+                    if (successCount == totalCount && summaryExported) {
+                        status = "Data fetched successfully! ($totalRecords records from $totalTypesWithData types)"
+                        errorMessage = null
                     } else {
-                        "All historical data fetched!"
+                        // Partial export success
+                        status = "Data fetched! ($totalRecords records)"
+                        errorMessage = "Export: $successCount/$totalCount categories saved"
                     }
-                    errorMessage = null
+                } else {
+                    // No data fetched - could be permissions or no data available
+                    if (typesWithPermissionDenied > 0) {
+                        status = "No data fetched - permissions needed"
+                        errorMessage = "$typesWithPermissionDenied data types need permissions. Grant permissions to fetch data."
+                    } else {
+                        status = "No data found for selected range"
+                        errorMessage = "No health data available for $dateRangeText"
+                    }
+                }
+                
+                // Update UI with summary
+                steps = totalRecords.toLong() // Display total records count in the steps field for summary
+                heartRateSamples = totalTypesWithData // Use types with data count
+                
+                lastUpdateTime = ZonedDateTime.now()
+                    .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))
+                
+                // Log file locations
+                Log.d(TAG, "Files saved to: ${baseDir.absolutePath}")
+                exportResults.forEach { (category, success) ->
+                    if (success) {
+                        val fileName = GenericHealthDataExporter.getCategoryFile(baseDir, category).name
+                        Log.d(TAG, "  ✓ $category: $fileName")
+                    } else {
+                        Log.w(TAG, "  ✗ $category: Export failed")
+                    }
+                }
+            } catch (e: SecurityException) {
+                // Permission-related error - don't treat as fatal
+                Log.w(TAG, "Permission error while fetching data: ${e.message}")
+                errorMessage = "Some permissions are missing. Data will be fetched for available types only."
+                status = "Fetching available data..."
+                
+                // Try to fetch what we can anyway
+                try {
+                    val allFetchedRecords = genericHealthRepository.fetchAllRecordsForAllCategories(
+                        startTime = if (startDate != null) {
+                            startDate.atStartOfDay(ZoneId.systemDefault()).toInstant()
+                        } else {
+                            ZonedDateTime.of(2020, 1, 1, 0, 0, 0, 0, ZoneId.systemDefault()).toInstant()
+                        },
+                        endTime = if (endDate != null) {
+                            endDate.atTime(23, 59, 59).atZone(ZoneId.systemDefault()).toInstant()
+                        } else {
+                            java.time.Instant.now()
+                        }
+                    )
                     
-                    // Update UI with summary
-                    // Calculate total records across all categories and types
+                    // Update UI with partial data
+                    val uiHealthData = allFetchedRecords.mapValues { (_, categoryRecords) ->
+                        categoryRecords.mapValues { (_, fetchedRecords) ->
+                            fetchedRecords.count
+                        }
+                    }
+                    allHealthData = uiHealthData
+                    allHealthRecords = allFetchedRecords
+                    
                     val totalRecords = allFetchedRecords.values.sumOf { categoryMap ->
                         categoryMap.values.sumOf { it.count }
                     }
-
-                    steps = totalRecords.toLong() // Display total records count in the steps field for summary
-                    heartRateSamples = totalCount // Use category count
                     
-                    lastUpdateTime = ZonedDateTime.now()
-                        .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))
-                    
-                    // Log file locations
-                    Log.d(TAG, "Files saved to: ${baseDir.absolutePath}")
-                    exportResults.forEach { (category, success) ->
-                        if (success) {
-                            val fileName = GenericHealthDataExporter.getCategoryFile(baseDir, category).name
-                            Log.d(TAG, "  - $category: $fileName")
-                        }
+                    if (totalRecords > 0) {
+                        status = "Partial data fetched ($totalRecords records)"
+                        errorMessage = "Some permissions missing. Grant all permissions for complete data."
+                    } else {
+                        status = "No data available"
+                        errorMessage = "Grant permissions to fetch health data."
                     }
-                } else {
-                    status = "Data fetched but some exports had errors"
-                    errorMessage = "Categories exported: $successCount/$totalCount"
+                } catch (retryException: Exception) {
+                    Log.e(TAG, "Error during retry fetch", retryException)
+                    errorMessage = "Unable to fetch data: ${retryException.message}"
+                    status = "Error occurred"
                 }
             } catch (e: Exception) {
+                // Log full error for debugging
                 Log.e(TAG, "Error fetching all health data types", e)
-                errorMessage = "Failed to fetch data: ${e.message}"
+                
+                // Provide user-friendly error message
+                val errorMsg = when {
+                    e.message?.contains("permission", ignoreCase = true) == true -> 
+                        "Permission error. Some data types may not be available."
+                    e.message?.contains("network", ignoreCase = true) == true -> 
+                        "Network error. Please check your connection."
+                    e.message?.contains("timeout", ignoreCase = true) == true -> 
+                        "Request timed out. Please try again."
+                    else -> "Error: ${e.message ?: "Unknown error"}"
+                }
+                
+                errorMessage = errorMsg
                 status = "Error occurred"
+                
+                // Try to continue with partial data if possible
+                Log.d(TAG, "Attempting to continue with partial data fetch...")
+            }
+        }
+
+        // --- App Resume Handling ---
+        // Refresh data when the app comes back to the foreground
+        DisposableEffect(Unit) {
+            val observer = LifecycleEventObserver { _, event ->
+                if (event == Lifecycle.Event.ON_RESUME) {
+                    Log.d(TAG, "App resumed, refreshing data...")
+                    scope.launch {
+                        // Refresh based on what was last viewed or just default 7 days
+                        // For simplicity, we'll refresh the basic data if available
+                        if (isHealthConnectAvailable && ::healthRepository.isInitialized) {
+                            fetchHealthData()
+                        }
+                    }
+                }
+            }
+            lifecycle.addObserver(observer)
+            onDispose {
+                lifecycle.removeObserver(observer)
             }
         }
 

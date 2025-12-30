@@ -10,7 +10,7 @@ import kotlin.reflect.KClass
 object HealthRecordTypes {
     /**
      * Data class representing a health record type configuration.
-     * 
+     *
      * @property recordClass The record class type
      * @property category The category name (e.g., "Activity", "Vitals")
      * @property displayName The human-readable display name
@@ -123,7 +123,7 @@ object HealthRecordTypes {
 
     /**
      * Gets all record types for a specific category.
-     * 
+     *
      * @param category The category name
      * @return List of record type configurations for the category
      */

@@ -92,47 +92,66 @@ object GenericHealthDataExporter {
         var totalRecordsInCategory = 0
 
         categoryRecords.forEach { (displayName, fetchedRecords) ->
-            val recordTypeJson = JSONObject().apply {
-                put("displayName", fetchedRecords.recordTypeConfig.displayName)
-                put("category", fetchedRecords.recordTypeConfig.category)
-                put("totalRecords", fetchedRecords.count) // Will be 0 if no data
-                put("hasData", fetchedRecords.count > 0) // Explicit flag for whether data exists
-                
-                // Create records array (will be empty array if count is 0)
-                val recordsArray = JSONArray()
-                
-                // ALWAYS include records, even if count is 0 (it will just be an empty array)
-                // If fetchedRecords.count > 0, we populate it
-                if (fetchedRecords.count > 0) {
-                    fetchedRecords.records.forEach { record ->
-                        val recordJson = JSONObject().apply {
-                            put("recordType", record.javaClass.simpleName)
-                            
-                            // Try to extract common fields
+            try {
+                val recordTypeJson = JSONObject().apply {
+                    put("displayName", fetchedRecords.recordTypeConfig.displayName)
+                    put("category", fetchedRecords.recordTypeConfig.category)
+                    put("totalRecords", fetchedRecords.count) // Will be 0 if no data
+                    put("hasData", fetchedRecords.count > 0) // Explicit flag for whether data exists
+                    put("isPermissionDenied", fetchedRecords.isPermissionDenied) // Track permission status
+                    
+                    // Create records array (will be empty array if count is 0)
+                    val recordsArray = JSONArray()
+                    
+                    // ALWAYS include records, even if count is 0 (it will just be an empty array)
+                    // If fetchedRecords.count > 0, we populate it
+                    if (fetchedRecords.count > 0) {
+                        fetchedRecords.records.forEach { record ->
                             try {
-                                val startTimeMethod = record.javaClass.getMethod("getStartTime")
-                                val startTime = startTimeMethod.invoke(record)
-                                put("startTime", startTime.toString())
-                            } catch (e: Exception) {}
-                            
-                            try {
-                                val endTimeMethod = record.javaClass.getMethod("getEndTime")
-                                val endTime = endTimeMethod.invoke(record)
-                                put("endTime", endTime.toString())
-                            } catch (e: Exception) {}
-                            
-                            // Add full record data as string (can be improved with proper serialization)
-                            put("data", record.toString())
+                                val recordJson = JSONObject().apply {
+                                    put("recordType", record.javaClass.simpleName)
+                                    
+                                    // Try to extract common fields - handle errors gracefully
+                                    try {
+                                        val startTimeMethod = record.javaClass.getMethod("getStartTime")
+                                        val startTime = startTimeMethod.invoke(record)
+                                        put("startTime", startTime.toString())
+                                    } catch (e: Exception) {
+                                        // Method doesn't exist or error - skip this field
+                                        Log.d(TAG, "Could not extract startTime for ${record.javaClass.simpleName}")
+                                    }
+                                    
+                                    try {
+                                        val endTimeMethod = record.javaClass.getMethod("getEndTime")
+                                        val endTime = endTimeMethod.invoke(record)
+                                        put("endTime", endTime.toString())
+                                    } catch (e: Exception) {
+                                        // Method doesn't exist or error - skip this field
+                                        Log.d(TAG, "Could not extract endTime for ${record.javaClass.simpleName}")
+                                    }
+                                    
+                                    // Add full record data as string (can be improved with proper serialization)
+                                    put("data", record.toString())
+                                }
+                                recordsArray.put(recordJson)
+                            } catch (e: Exception) {
+                                // If individual record export fails, log and continue with next record
+                                Log.w(TAG, "Error exporting individual record for $displayName: ${e.message} - continuing")
+                                // Continue to next record - don't fail entire record type
+                            }
                         }
-                        recordsArray.put(recordJson)
                     }
+                    // If count is 0, records array will be empty []
+                    put("records", recordsArray)
                 }
-                // If count is 0, records array will be empty []
-                put("records", recordsArray)
+                
+                recordTypesJson.put(displayName, recordTypeJson)
+                totalRecordsInCategory += fetchedRecords.count
+            } catch (e: Exception) {
+                // If exporting a record type fails, log and continue with other types
+                Log.e(TAG, "Error exporting record type '$displayName' in category '$category': ${e.message} - continuing", e)
+                // Continue to next record type - don't fail entire category export
             }
-            
-            recordTypesJson.put(displayName, recordTypeJson)
-            totalRecordsInCategory += fetchedRecords.count
         }
 
         categoryJson.apply {
@@ -161,21 +180,46 @@ object GenericHealthDataExporter {
 
         allFetchedRecords.forEach { (category, categoryRecords) ->
             try {
+                // Skip empty categories silently (they're expected if no permissions)
+                if (categoryRecords.isEmpty()) {
+                    Log.d(TAG, "Skipping empty category: $category")
+                    results[category] = true // Mark as success since there's nothing to export
+                    return@forEach
+                }
+                
                 val jsonString = exportCategoryToJson(categoryRecords, category)
                 val fileName = "${category.lowercase().replace(" ", "_")}_data.json"
                 val file = File(baseDir, fileName)
 
                 // Create parent directories if they don't exist
-                file.parentFile?.mkdirs()
+                try {
+                    file.parentFile?.mkdirs()
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error creating directories for category: $category", e)
+                    results[category] = false
+                    return@forEach
+                }
 
                 // Write JSON to file
-                file.writeText(jsonString)
-                
-                results[category] = true
-                Log.d(TAG, "Exported category '$category' to file: ${file.absolutePath}")
+                try {
+                    file.writeText(jsonString)
+                    results[category] = true
+                    Log.d(TAG, "✓ Exported category '$category' to file: ${file.absolutePath}")
+                } catch (e: java.io.IOException) {
+                    Log.e(TAG, "✗ IO error exporting category: $category - ${e.message}", e)
+                    results[category] = false
+                } catch (e: SecurityException) {
+                    Log.e(TAG, "✗ Security error exporting category: $category - ${e.message}", e)
+                    results[category] = false
+                } catch (e: Exception) {
+                    Log.e(TAG, "✗ Error writing file for category: $category - ${e.message}", e)
+                    results[category] = false
+                }
             } catch (e: Exception) {
-                Log.e(TAG, "Error exporting category: $category", e)
+                // Catch any other errors during export
+                Log.e(TAG, "✗ Unexpected error exporting category: $category (${e.javaClass.simpleName}) - ${e.message}", e)
                 results[category] = false
+                // Continue with other categories - don't fail entire export
             }
         }
 
@@ -204,16 +248,24 @@ object GenericHealthDataExporter {
             var totalRecords = 0
 
             allFetchedRecords.forEach { (category, categoryRecords) ->
-                val categoryJson = JSONObject().apply {
-                    put("category", category)
-                    put("recordTypes", categoryRecords.size)
-                    put("totalRecords", categoryRecords.values.sumOf { it.count })
+                try {
+                    val categoryJson = JSONObject().apply {
+                        put("category", category)
+                        put("recordTypes", categoryRecords.size)
+                        put("totalRecords", categoryRecords.values.sumOf { it.count })
+                        put("typesWithData", categoryRecords.values.count { it.count > 0 })
+                        put("typesWithPermissionDenied", categoryRecords.values.count { it.isPermissionDenied })
+                    }
+                    categoriesJson.put(category, categoryJson)
+                    
+                    totalCategories++
+                    totalRecordTypes += categoryRecords.size
+                    totalRecords += categoryRecords.values.sumOf { it.count }
+                } catch (e: Exception) {
+                    // If a category fails to serialize, log and continue
+                    Log.w(TAG, "Error serializing category '$category' in summary: ${e.message} - continuing")
+                    // Continue with other categories
                 }
-                categoriesJson.put(category, categoryJson)
-                
-                totalCategories++
-                totalRecordTypes += categoryRecords.size
-                totalRecords += categoryRecords.values.sumOf { it.count }
             }
 
             allDataJson.apply {

@@ -2,6 +2,7 @@ package com.example.health.ui.screen
 
 import android.app.DatePickerDialog
 import android.content.Context
+import android.util.Log
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
@@ -11,7 +12,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.health.connect.client.records.Record
 import com.example.health.data.model.DailySteps
 import com.example.health.data.model.HeartRateSample
 import com.example.health.data.repository.GenericHealthRepository
@@ -66,7 +66,8 @@ fun HealthScreen(
     if (selectedRecordType != null && selectedCategory != null) {
         // Find the records for the selected type
         val records = allHealthRecords[selectedCategory]?.get(selectedRecordType)?.records ?: emptyList()
-        
+        Log.d("RECORDS ---->","size=${records.size}, $selectedCategory")
+
         GenericRecordDetailScreen(
             recordType = selectedRecordType!!,
             records = records,
